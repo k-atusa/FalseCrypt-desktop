@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"sort"
 	"strings"
@@ -687,6 +688,61 @@ func (s *Scheduler) LsDbg(subnm string) (uint64, []byte, uint64, uint64, int, in
 	meta := s.fs.Meta[uid]
 	key, _ := s.Mask.XOR(meta.Key[0:FC_KEYSIZE])
 	return uid, key, totalSize, totalEsize, filenum, dirnum
+}
+
+// search files or dir
+func (s *Scheduler) Search(pattern string, userA bool, userB bool, minsl uint8) []string {
+	s.IsWorking.Store(true)
+	defer s.finish("search")
+	s.lock.RLock()
+	defer s.lock.RUnlock()
+
+	// compile regex
+	var results []string
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		s.Log.AddLog("search", "invalid pattern: "+err.Error())
+		return nil
+	}
+
+	// recursive search
+	var walk func(node *FalseCrypt.VFile, currentPath string)
+	walk = func(node *FalseCrypt.VFile, currentPath string) {
+		for i := range node.Children {
+			child := &node.Children[i]
+			meta, ok := s.fs.Meta[child.GetUID()]
+			if !ok {
+				continue
+			}
+			childPath := meta.Name
+			if currentPath != "" {
+				childPath = currentPath + "/" + meta.Name
+			}
+
+			// check conditions
+			match := true
+			if userA && !child.GetFlag(FalseCrypt.FLAG_USER_A) {
+				match = false
+			}
+			if userB && !child.GetFlag(FalseCrypt.FLAG_USER_B) {
+				match = false
+			}
+			if child.GetSL() < minsl {
+				match = false
+			}
+
+			// serach pattern
+			if match && re.MatchString(meta.Name) {
+				results = append(results, childPath)
+			}
+			if child.GetFlag(FalseCrypt.FLAG_DIR) {
+				walk(child, childPath)
+			}
+		}
+	}
+
+	walk(s.Cwd, "")
+	return results
 }
 
 // import files or dir

@@ -392,7 +392,7 @@ func (v *ViewerPage) Main(a fyne.App, sched *Scheduler) {
 
 	v.Window = v.App.NewWindow("FalseCrypt")
 	v.Fill()
-	v.Window.Resize(fyne.NewSize(1280*BaseUI.FyneSize, 720*BaseUI.FyneSize))
+	v.Window.Resize(fyne.NewSize(1000*BaseUI.FyneSize, 600*BaseUI.FyneSize))
 	v.Window.CenterOnScreen()
 
 	// termination check
@@ -511,7 +511,7 @@ func (v *ViewerPage) viewTab() fyne.CanvasObject {
 	v.rebuild()
 	box0 := v.navBar()
 	box1 := container.NewVBox(container.NewHScroll(v.toolbarBox), widget.NewSeparator(), box0)
-	v.gridWrap = container.NewGridWrap(fyne.NewSize(180, 100))
+	v.gridWrap = container.NewGridWrap(fyne.NewSize(210, 90))
 	box2 := container.NewVScroll(v.gridWrap)
 	v.refresh()
 	return container.NewBorder(box1, nil, nil, nil, box2)
@@ -615,7 +615,7 @@ func (v *ViewerPage) gridCard(idx int) fyne.CanvasObject {
 	// size, time
 	sizeStr := formatSize(v.Sizes[idx])
 	timeStr := formatTime(v.EdTimes[idx])
-	infoText := canvas.NewText(sizeStr+" "+timeStr, color.NRGBA{R: 190, G: 190, B: 190, A: 255}) // bright gray
+	infoText := canvas.NewText(" |  "+sizeStr+"  |  "+timeStr, color.NRGBA{R: 190, G: 190, B: 190, A: 255}) // bright gray
 	infoText.TextSize = 11
 
 	// secure level
@@ -722,11 +722,12 @@ func (v *ViewerPage) debugTab() fyne.CanvasObject {
 	)
 
 	// part2: columns
-	btn2 := widget.NewButtonWithIcon("Debug", theme.SearchIcon(), v.lsDbg)
+	btn2a := widget.NewButtonWithIcon("Debug", theme.InfoIcon(), v.lsDbg)
+	btn2b := widget.NewButtonWithIcon("Search", theme.SearchIcon(), v.schDialog)
 	box2a := container.NewBorder(widget.NewLabel("IO Log"), nil, nil, nil, v.ioLogEntry)
 	box2b := container.NewBorder(widget.NewLabel("Shell Log"), nil, nil, nil, v.shellLogEntry)
 	box2c := container.NewBorder(
-		container.NewHBox(widget.NewLabel("Debug Info"), btn2),
+		container.NewHBox(widget.NewLabel("Debug Info"), btn2a, btn2b),
 		nil, nil, nil, v.debugInfoEntry,
 	)
 
@@ -754,6 +755,40 @@ func (v *ViewerPage) lsDbg() {
 		sclear(key)
 		fyne.Do(func() { v.debugInfoEntry.SetText(info) })
 	}()
+}
+
+func (v *ViewerPage) schDialog() {
+	// part0: condition set
+	ent0 := widget.NewEntry()
+	ent0.SetPlaceHolder("Regex Pattern")
+	chk0a := widget.NewCheck("User A", nil)
+	chk0b := widget.NewCheck("User B", nil)
+	sel0 := widget.NewSelect([]string{"CONTROLLED", "CONFIDENTIAL", "SECRET", "TOP SECRET"}, nil)
+	sel0.SetSelected("CONTROLLED")
+
+	// part1: form
+	form1 := dialog.NewForm("Search Settings", "Search", "Cancel", []*widget.FormItem{
+		widget.NewFormItem("Pattern", ent0),
+		widget.NewFormItem("Flag A", chk0a),
+		widget.NewFormItem("Flag B", chk0b),
+		widget.NewFormItem("Security Level", sel0),
+	}, func(b bool) {
+		if !b {
+			return
+		}
+		go func() {
+			res := v.Sched.Search(ent0.Text, chk0a.Checked, chk0b.Checked, parseSL(sel0.Selected))
+			fyne.Do(func() {
+				if len(res) == 0 {
+					v.debugInfoEntry.SetText("No results found.")
+				} else {
+					v.debugInfoEntry.SetText(strings.Join(res, "\n"))
+				}
+			})
+		}()
+	}, v.Window)
+	form1.Resize(fyne.NewSize(400, 250))
+	form1.Show()
 }
 
 func (v *ViewerPage) refreshDebug() {
@@ -840,7 +875,7 @@ func (v *ViewerPage) accTab() fyne.CanvasObject {
 			sclear(wrkey)
 		})
 	})
-	btn1.Importance = widget.HighImportance
+	btn1.Importance = widget.DangerImportance
 
 	// part2: share account
 	ent2 := widget.NewEntry()
