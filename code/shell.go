@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -61,7 +62,7 @@ type Scheduler struct {
 	IsUpdated bool
 	fs        *FalseCrypt.PEVFS
 	lock      sync.RWMutex
-	io        FalseCrypt.VirtualIO
+	Vio       FalseCrypt.VirtualIO
 
 	// shell status
 	Log        *Logger
@@ -139,9 +140,9 @@ func (s *Scheduler) imAssist(localPath string, parent *FalseCrypt.VFile) error {
 	}
 
 	s.lock.Lock()
-	s.NextUID++
 	s.nextUID()
 	uid := s.NextUID
+	s.NextUID++
 	s.lock.Unlock()
 
 	var child FalseCrypt.VFile
@@ -271,7 +272,7 @@ func (s *Scheduler) imAssist(localPath string, parent *FalseCrypt.VFile) error {
 		}
 
 		cid := s.fs.Account.GetCID(uid, uint32(chunkIdx))
-		if err := s.io.WriteChunk(cid, chunkData); err != nil {
+		if err := s.Vio.WriteChunk(cid, chunkData); err != nil {
 			return err
 		}
 		chunkIdx++
@@ -353,7 +354,7 @@ func (s *Scheduler) exAssist(node *FalseCrypt.VFile, localDstDir string) error {
 	s.Log.SetPercent(0)
 	for remainingEnc > 0 {
 		cid := s.fs.Account.GetCID(uid, uint32(chunkIdx))
-		chunkData, err := s.io.ReadChunk(cid)
+		chunkData, err := s.Vio.ReadChunk(cid)
 		if err != nil {
 			return err
 		}
@@ -403,11 +404,94 @@ func (s *Scheduler) exAssist(node *FalseCrypt.VFile, localDstDir string) error {
 	return nil
 }
 
+// cat function assist
+func (s *Scheduler) catAssist(sel string) []byte {
+	// find file node and metadata
+	s.lock.RLock()
+	cwd := s.Cwd
+	var uid uint64
+	var meta FalseCrypt.VMeta
+	var isEmpty, isCmp bool
+	found := false
+
+	for i := range cwd.Children {
+		child := &cwd.Children[i]
+		if m, ok := s.fs.Meta[child.GetUID()]; ok && m.Name == sel {
+			if !child.GetFlag(FalseCrypt.FLAG_DIR) {
+				uid = child.GetUID()
+				meta = m
+				isEmpty = child.GetFlag(FalseCrypt.FLAG_EMPTY) || m.Size == 0
+				isCmp = child.GetFlag(FalseCrypt.FLAG_COMPRESS)
+				found = true
+				break
+			}
+		}
+	}
+	s.lock.RUnlock()
+
+	// empty file optimization, size check
+	if !found {
+		s.Log.AddLog("cat", "no file: "+sel)
+		return nil
+	}
+	if isEmpty {
+		return []byte{}
+	}
+	if meta.Size > uint64(LIMIT_IMAGE) || meta.EncSize > uint64(CHUNKSIZE) {
+		s.Log.AddLog("cat", "file exceeds size limit")
+		return nil
+	}
+	s.Log.AddLog("cat", "working on: "+meta.Name)
+	s.Log.SetPercent(0)
+
+	// read single chunk
+	cid := s.fs.Account.GetCID(uid, 0)
+	chunkData, err := s.Vio.ReadChunk(cid)
+	if err != nil {
+		s.Log.AddLog("cat", fmt.Sprintf("read chunk error: %v", err))
+		return nil
+	}
+	s.Log.SetPercent(1.0)
+
+	// decrypt with key
+	s.lock.Lock()
+	rawKey, err := s.Mask.XOR(meta.Key[0:FC_KEYSIZE])
+	s.lock.Unlock()
+	if err != nil {
+		s.Log.AddLog("cat", fmt.Sprintf("key derivation error: %v", err))
+		return nil
+	}
+	defer sclear(rawKey)
+
+	// decrypt chunk
+	sm := new(Bencrypt.SymMaster)
+	if err := sm.Init("gcmx1", rawKey); err != nil {
+		s.Log.AddLog("cat", fmt.Sprintf("crypto master init error: %v", err))
+		return nil
+	}
+	decBuf := new(bytes.Buffer)
+	if err := sm.DeFile(bytes.NewReader(chunkData), int64(meta.EncSize), decBuf); err != nil {
+		s.Log.AddLog("cat", fmt.Sprintf("decrypt error: %v", err))
+		return nil
+	}
+
+	// decompress
+	if isCmp {
+		decompressedData, err := FalseCrypt.Decompress(decBuf.Bytes())
+		if err != nil {
+			s.Log.AddLog("cat", fmt.Sprintf("decompress error: %v", err))
+			return nil
+		}
+		return decompressedData
+	}
+	return decBuf.Bytes()
+}
+
 func (s *Scheduler) Init(fs *FalseCrypt.PEVFS, vio FalseCrypt.VirtualIO, msg string, salt []byte, hkey []byte) {
 	// initialize fields
 	s.IsUpdated = false
 	s.fs = fs
-	s.io = vio
+	s.Vio = vio
 	s.Log = new(Logger)
 	s.Cwd = &s.fs.Root
 	s.CwdPath = []string{s.fs.Meta[s.fs.Root.GetUID()].Name}
@@ -502,7 +586,46 @@ func (s *Scheduler) Ls() ([]string, []uint64, []uint64, []uint8, [][]bool) {
 		}
 		flags = append(flags, f)
 	}
-	return names, sizes, edtimes, seclvls, flags
+
+	// Create indices slice for sorting
+	indices := make([]int, len(names))
+	for i := range indices {
+		indices[i] = i
+	}
+
+	// sort indices: dir first, then by name
+	sort.Slice(indices, func(i, j int) bool {
+		idxI := indices[i]
+		idxJ := indices[j]
+
+		isDirI := flags[idxI][0]
+		isDirJ := flags[idxJ][0]
+		if isDirI != isDirJ {
+			return isDirI // directory first
+		}
+		nameI := strings.ToLower(names[idxI])
+		nameJ := strings.ToLower(names[idxJ])
+		if nameI == nameJ {
+			return names[idxI] < names[idxJ]
+		}
+		return nameI < nameJ
+	})
+
+	// Rearrange slices based on sorted indices
+	sortedNames := make([]string, len(names))
+	sortedSizes := make([]uint64, len(sizes))
+	sortedEdtimes := make([]uint64, len(edtimes))
+	sortedSeclvls := make([]uint8, len(seclvls))
+	sortedFlags := make([][]bool, len(flags))
+
+	for i, idx := range indices {
+		sortedNames[i] = names[idx]
+		sortedSizes[i] = sizes[idx]
+		sortedEdtimes[i] = edtimes[idx]
+		sortedSeclvls[i] = seclvls[idx]
+		sortedFlags[i] = flags[idx]
+	}
+	return sortedNames, sortedSizes, sortedEdtimes, sortedSeclvls, sortedFlags
 }
 
 // list dir debug info, (uid, key, size, esize, filenum, dirnum)
@@ -535,10 +658,18 @@ func (s *Scheduler) LsDbg(subnm string) (uint64, []byte, uint64, uint64, int, in
 	var totalSize, totalEsize uint64
 	var walk func(node *FalseCrypt.VFile)
 	walk = func(node *FalseCrypt.VFile) {
+		if node.GetFlag(FalseCrypt.FLAG_DIR) {
+			dirnum++
+		} else {
+			filenum++
+			if meta, ok := s.fs.Meta[node.GetUID()]; ok {
+				totalSize += meta.Size
+				totalEsize += meta.EncSize
+			}
+		}
 		for i := range node.Children {
 			child := &node.Children[i]
 			if child.GetFlag(FalseCrypt.FLAG_DIR) {
-				dirnum++
 				walk(child)
 			} else {
 				filenum++
@@ -622,93 +753,19 @@ func (s *Scheduler) Export(sels []string, dst string) {
 }
 
 // view file content
-func (s *Scheduler) Cat(sel string) []byte {
+func (s *Scheduler) Cat(sels []string) [][]byte {
 	s.IsWorking.Store(true)
 	defer s.finish("cat")
 
-	// find file node and metadata
-	s.lock.RLock()
-	cwd := s.Cwd
-	var uid uint64
-	var meta FalseCrypt.VMeta
-	var isEmpty, isCmp bool
-	found := false
-
-	for i := range cwd.Children {
-		child := &cwd.Children[i]
-		if m, ok := s.fs.Meta[child.GetUID()]; ok && m.Name == sel {
-			if !child.GetFlag(FalseCrypt.FLAG_DIR) {
-				uid = child.GetUID()
-				meta = m
-				isEmpty = child.GetFlag(FalseCrypt.FLAG_EMPTY) || m.Size == 0
-				isCmp = child.GetFlag(FalseCrypt.FLAG_COMPRESS)
-				found = true
-				break
-			}
-		}
+	var results [][]byte
+	for _, sel := range sels {
+		results = append(results, s.catAssist(sel))
 	}
-	s.lock.RUnlock()
-
-	// empty file optimization, size check
-	if !found {
-		s.Log.AddLog("cat", "no file: "+sel)
-		return nil
-	}
-	if isEmpty {
-		return []byte{}
-	}
-	if meta.Size > uint64(LIMIT_IMAGE) || meta.EncSize > uint64(CHUNKSIZE) {
-		s.Log.AddLog("cat", "file exceeds size limit")
-		return nil
-	}
-	s.Log.AddLog("cat", "working on: "+meta.Name)
-	s.Log.SetPercent(0)
-
-	// read single chunk
-	cid := s.fs.Account.GetCID(uid, 0)
-	chunkData, err := s.io.ReadChunk(cid)
-	if err != nil {
-		s.Log.AddLog("cat", fmt.Sprintf("read chunk error: %v", err))
-		return nil
-	}
-	s.Log.SetPercent(1.0)
-
-	// decrypt with key
-	s.lock.Lock()
-	rawKey, err := s.Mask.XOR(meta.Key[0:FC_KEYSIZE])
-	s.lock.Unlock()
-	if err != nil {
-		s.Log.AddLog("cat", fmt.Sprintf("key derivation error: %v", err))
-		return nil
-	}
-	defer sclear(rawKey)
-
-	// decrypt chunk
-	sm := new(Bencrypt.SymMaster)
-	if err := sm.Init("gcmx1", rawKey); err != nil {
-		s.Log.AddLog("cat", fmt.Sprintf("crypto master init error: %v", err))
-		return nil
-	}
-	decBuf := new(bytes.Buffer)
-	if err := sm.DeFile(bytes.NewReader(chunkData), int64(meta.EncSize), decBuf); err != nil {
-		s.Log.AddLog("cat", fmt.Sprintf("decrypt error: %v", err))
-		return nil
-	}
-
-	// decompress
-	if isCmp {
-		decompressedData, err := FalseCrypt.Decompress(decBuf.Bytes())
-		if err != nil {
-			s.Log.AddLog("cat", fmt.Sprintf("decompress error: %v", err))
-			return nil
-		}
-		return decompressedData
-	}
-	return decBuf.Bytes()
+	return results
 }
 
 // remove files or dir
-func (s *Scheduler) Rm(sel string) {
+func (s *Scheduler) Rm(sels []string) {
 	s.IsWorking.Store(true)
 	defer s.finish("rm")
 	if s.IsReadonly {
@@ -716,24 +773,13 @@ func (s *Scheduler) Rm(sel string) {
 		return
 	}
 
-	// find target
-	s.lock.Lock()
-	idx := -1
-	for i := range s.Cwd.Children {
-		child := &s.Cwd.Children[i]
-		if meta, ok := s.fs.Meta[child.GetUID()]; ok && meta.Name == sel {
-			idx = i
-			break
-		}
+	// assist for collectiong all UID
+	targetSet := make(map[string]bool)
+	for _, sel := range sels {
+		targetSet[sel] = true
 	}
-	if idx == -1 {
-		s.Log.AddLog("rm", "no file or directory: "+sel)
-		s.lock.Unlock()
-		return
-	}
-	targetNode := s.Cwd.Children[idx]
 
-	// store nodes to delete
+	s.lock.Lock()
 	var delUIDs []uint64
 	var delNames []string
 	var delEncSizes []uint64
@@ -754,10 +800,27 @@ func (s *Scheduler) Rm(sel string) {
 			collect(&node.Children[i])
 		}
 	}
-	collect(&targetNode)
+
+	// walk children, make new vfile array
+	var newChildren []FalseCrypt.VFile
+	foundAny := false
+	for i := range s.Cwd.Children {
+		child := &s.Cwd.Children[i]
+		if meta, ok := s.fs.Meta[child.GetUID()]; ok && targetSet[meta.Name] {
+			foundAny = true
+			collect(child)
+		} else {
+			newChildren = append(newChildren, s.Cwd.Children[i])
+		}
+	}
+	if !foundAny {
+		s.Log.AddLog("rm", "no file or directory matched")
+		s.lock.Unlock()
+		return
+	}
 
 	// delete nodes and metas
-	s.Cwd.Children = append(s.Cwd.Children[:idx], s.Cwd.Children[idx+1:]...)
+	s.Cwd.Children = newChildren
 	for _, uid := range delUIDs {
 		delete(s.fs.Meta, uid)
 	}
@@ -778,7 +841,7 @@ func (s *Scheduler) Rm(sel string) {
 		for remainingEnc > 0 {
 			currentChunkSize := min(remainingEnc, CHUNKSIZE)
 			cid := s.fs.Account.GetCID(delUIDs[i], uint32(chunkIdx))
-			if err := s.io.DelChunk(cid); err != nil {
+			if err := s.Vio.DelChunk(cid); err != nil {
 				s.Log.AddLog("rm", fmt.Sprintf("delete chunk error for %s (chunk %d): %v", delNames[i], chunkIdx, err))
 			}
 			chunkIdx++
@@ -797,6 +860,7 @@ func (s *Scheduler) Mv(src string, sels []string) {
 	defer s.lock.Unlock()
 
 	// find src dir
+	srcParts := []string{s.fs.Meta[s.fs.Root.GetUID()].Name}
 	srcNode := &s.fs.Root
 	parts := strings.Split(src, "/")
 	for _, part := range parts {
@@ -809,6 +873,7 @@ func (s *Scheduler) Mv(src string, sels []string) {
 			if child.GetFlag(FalseCrypt.FLAG_DIR) {
 				if meta, ok := s.fs.Meta[child.GetUID()]; ok && meta.Name == part {
 					srcNode = child
+					srcParts = append(srcParts, part)
 					found = true
 					break
 				}
@@ -850,24 +915,22 @@ func (s *Scheduler) Mv(src string, sels []string) {
 		target := srcNode.Children[idx]
 
 		// check move validity
-		isInvalidMove := false
-		var checkSubtree func(node *FalseCrypt.VFile)
-		checkSubtree = func(node *FalseCrypt.VFile) {
-			if node.GetUID() == s.Cwd.GetUID() {
+		targetParts := append(slices.Clone(srcParts), sel)
+		if target.GetFlag(FalseCrypt.FLAG_DIR) {
+			isInvalidMove := false
+			if len(s.CwdPath) >= len(targetParts) {
 				isInvalidMove = true
-				return
-			}
-			for i := range node.Children {
-				checkSubtree(&node.Children[i])
-				if isInvalidMove {
-					return
+				for i := 0; i < len(targetParts); i++ {
+					if s.CwdPath[i] != targetParts[i] {
+						isInvalidMove = false
+						break
+					}
 				}
 			}
-		}
-		checkSubtree(&target)
-		if isInvalidMove {
-			s.Log.AddLog("mv", "cannot move parent to child: "+sel)
-			continue
+			if isInvalidMove {
+				s.Log.AddLog("mv", "cannot move parent to child: "+sel)
+				continue
+			}
 		}
 
 		// check name duplication
@@ -1001,9 +1064,9 @@ func (s *Scheduler) Mkdir(nm string) {
 	}
 
 	// derive unique uid
-	s.NextUID++
 	s.nextUID()
 	uid := s.NextUID
+	s.NextUID++
 
 	// make new node
 	var child FalseCrypt.VFile
@@ -1019,8 +1082,73 @@ func (s *Scheduler) Mkdir(nm string) {
 	s.chTime(s.Cwd, s.CwdPath)
 }
 
+// change user flag
+func (s *Scheduler) Chflag(userA string, userB string) {
+	if userA == "" || userB == "" {
+		s.Log.AddLog("chflag", "invalid user flag")
+		return
+	}
+	if s.IsReadonly {
+		s.Log.AddLog("chflag", "readonly status")
+		return
+	}
+	s.lock.Lock()
+	defer s.lock.Unlock()
+	s.fs.Account.UserBitA = userA
+	s.fs.Account.UserBitB = userB
+	s.IsUpdated = true
+	s.Log.AddLog("chflag", "user flag updated")
+}
+
+// commit filesystem to storage
+func (s *Scheduler) Commit() {
+	s.IsWorking.Store(true)
+	defer s.finish("commit")
+	if s.IsReadonly {
+		s.Log.AddLog("commit", "readonly status")
+		return
+	}
+
+	// restore hkey
+	s.lock.Lock()
+	hkey, err := s.Mask.XOR(s.Hkey)
+	if err != nil {
+		s.lock.Unlock()
+		s.Log.AddLog("commit", fmt.Sprintf("key unmask error: %v", err))
+		return
+	}
+	defer sclear(hkey)
+
+	// pack PEVFS
+	buf := new(bytes.Buffer)
+	err = s.fs.Pack(hkey, s.Salt, s.Msg, buf)
+	s.lock.Unlock()
+	if err != nil {
+		s.Log.AddLog("commit", fmt.Sprintf("pack error: %v", err))
+		return
+	}
+
+	// push account file
+	if err := s.Vio.SetAccount(s.fs.Account.UserName, bytes.NewReader(buf.Bytes()), int64(buf.Len())); err != nil {
+		s.Log.AddLog("commit", fmt.Sprintf("storage save error: %v", err))
+		return
+	}
+	s.lock.Lock()
+	s.IsUpdated = false
+	s.lock.Unlock()
+
+	// 10% trim empty
+	if time.Now().Unix()%10 == 0 {
+		if err := s.Vio.TrimEmpty(); err == nil {
+			s.Log.AddLog("commit", "empty dir trimmed")
+		} else {
+			s.Log.AddLog("commit", fmt.Sprintf("trim empty error on storage: %v", err))
+		}
+	}
+}
+
 // change password
-func (s *Scheduler) Passwd(msg string, pw []byte, kf []byte) {
+func (s *Scheduler) Passwd(msg string, pw []byte, kf []byte, newWrkey []byte) {
 	s.IsWorking.Store(true)
 	defer s.finish("passwd")
 
@@ -1032,6 +1160,18 @@ func (s *Scheduler) Passwd(msg string, pw []byte, kf []byte) {
 		return
 	}
 	defer sclear(hkey)
+
+	// update write auth key if provided
+	s.lock.Lock()
+	if len(newWrkey) > 0 {
+		s.fs.Account.WriteAuth = newWrkey
+		s.Vio, err = Config.GetIO(newWrkey)
+		if err != nil {
+			s.Log.AddLog("passwd", fmt.Sprintf("IO init error: %v", err))
+			return
+		}
+	}
+	s.lock.Unlock()
 
 	// make buffer, pack
 	s.lock.Lock()
@@ -1053,7 +1193,7 @@ func (s *Scheduler) Passwd(msg string, pw []byte, kf []byte) {
 		}
 		s.Log.AddLog("passwd", "accfile saved as: "+filename)
 	} else {
-		err = s.io.SetAccount(s.fs.Account.UserName, bytes.NewReader(buf.Bytes()), int64(buf.Len()))
+		err = s.Vio.SetAccount(s.fs.Account.UserName, bytes.NewReader(buf.Bytes()), int64(buf.Len()))
 		if err != nil {
 			s.Log.AddLog("passwd", fmt.Sprintf("storage save error: %v", err))
 			return
@@ -1123,7 +1263,7 @@ func (s *Scheduler) Share(username string, seclvl uint8, msg string, pw []byte, 
 		}
 		s.Log.AddLog("share", "accfile saved as: "+filename)
 	} else {
-		err = s.io.SetAccount(username, bytes.NewReader(buf.Bytes()), int64(buf.Len()))
+		err = s.Vio.SetAccount(username, bytes.NewReader(buf.Bytes()), int64(buf.Len()))
 		if err != nil {
 			s.Log.AddLog("share", fmt.Sprintf("storage save error: %v", err))
 			return
@@ -1142,7 +1282,7 @@ func (s *Scheduler) Sync() {
 
 	// get remote storage bloom filter
 	s.Log.AddLog("sync", "requesting remote storage bloom filter")
-	remoteBfBytes := s.io.CheckChunk()
+	remoteBfBytes := s.Vio.CheckChunk()
 	if len(remoteBfBytes) == 0 {
 		s.Log.AddLog("sync", "failed to fetch bloom filter")
 		return
@@ -1191,7 +1331,7 @@ func (s *Scheduler) Sync() {
 		for chunkIdx := 0; chunkIdx < count; chunkIdx++ {
 			cid := s.fs.Account.GetCID(uid, uint32(chunkIdx))
 			if !bfRemote.Test(cid) {
-				s.Log.AddLog("sync", fmt.Sprintf("chunk %d.%d is missing from remote storage", uid, chunkIdx))
+				s.Log.AddLog("sync", fmt.Sprintf("chunk %d.%d is missing from remote storage (CID %x)", uid, chunkIdx, cid))
 				missingChunks++
 			}
 			bfReturn.Add(cid)
@@ -1205,55 +1345,8 @@ func (s *Scheduler) Sync() {
 		s.Log.AddLog("sync", "all active chunks successfully verified in remote storage")
 	}
 	s.Log.AddLog("sync", "transmitting return bloom filter")
-	if err := s.io.TrimChunk(bfReturn.Export()); err != nil {
+	if err := s.Vio.TrimChunk(bfReturn.Export()); err != nil {
 		s.Log.AddLog("sync", fmt.Sprintf("failed to transmit return bloom filter: %v", err))
 		return
-	}
-}
-
-// commit filesystem to storage
-func (s *Scheduler) Commit() {
-	s.IsWorking.Store(true)
-	defer s.finish("commit")
-	if s.IsReadonly {
-		s.Log.AddLog("commit", "readonly status")
-		return
-	}
-
-	// restore hkey
-	s.lock.Lock()
-	hkey, err := s.Mask.XOR(s.Hkey)
-	if err != nil {
-		s.lock.Unlock()
-		s.Log.AddLog("commit", fmt.Sprintf("key unmask error: %v", err))
-		return
-	}
-	defer sclear(hkey)
-
-	// pack PEVFS
-	buf := new(bytes.Buffer)
-	err = s.fs.Pack(hkey, s.Salt, s.Msg, buf)
-	s.lock.Unlock()
-	if err != nil {
-		s.Log.AddLog("commit", fmt.Sprintf("pack error: %v", err))
-		return
-	}
-
-	// push account file
-	if err := s.io.SetAccount(s.fs.Account.UserName, bytes.NewReader(buf.Bytes()), int64(buf.Len())); err != nil {
-		s.Log.AddLog("commit", fmt.Sprintf("storage save error: %v", err))
-		return
-	}
-	s.lock.Lock()
-	s.IsUpdated = false
-	s.lock.Unlock()
-
-	// 10% trim empty
-	if time.Now().Unix()%10 == 0 {
-		if err := s.io.TrimEmpty(); err == nil {
-			s.Log.AddLog("commit", "empty dir trimmed")
-		} else {
-			s.Log.AddLog("commit", fmt.Sprintf("trim empty error on storage: %v", err))
-		}
 	}
 }
