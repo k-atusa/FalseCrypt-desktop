@@ -61,7 +61,7 @@ func (l *Logger) GetPercent() float64 {
 type Scheduler struct {
 	// filesystem
 	IsUpdated bool
-	fs        *FalseCrypt.PEVFS
+	FS        *FalseCrypt.PEVFS
 	lock      sync.RWMutex
 	Vio       FalseCrypt.VirtualIO
 
@@ -82,10 +82,10 @@ type Scheduler struct {
 
 // derive next uid
 func (s *Scheduler) nextUID() {
-	_, ok := s.fs.Meta[s.NextUID]
+	_, ok := s.FS.Meta[s.NextUID]
 	for ok {
 		s.NextUID++
-		_, ok = s.fs.Meta[s.NextUID]
+		_, ok = s.FS.Meta[s.NextUID]
 	}
 }
 
@@ -102,20 +102,20 @@ func (s *Scheduler) finish(op string) {
 // update edtime from root to cwd
 func (s *Scheduler) chTime(cwd *FalseCrypt.VFile, cpath []string) {
 	now := uint64(time.Now().Unix())
-	rootUID := s.fs.Root.GetUID()
-	if m, ok := s.fs.Meta[rootUID]; ok {
+	rootUID := s.FS.Root.GetUID()
+	if m, ok := s.FS.Meta[rootUID]; ok {
 		m.EdTime = now
-		s.fs.Meta[rootUID] = m
+		s.FS.Meta[rootUID] = m
 	}
 
-	currNode := &s.fs.Root
+	currNode := &s.FS.Root
 	for i := 1; i < len(cpath); i++ {
 		for j := range currNode.Children {
 			child := &currNode.Children[j]
 			if child.GetFlag(FalseCrypt.FLAG_DIR) {
-				if m, ok := s.fs.Meta[child.GetUID()]; ok && m.Name == cpath[i] {
+				if m, ok := s.FS.Meta[child.GetUID()]; ok && m.Name == cpath[i] {
 					m.EdTime = now
-					s.fs.Meta[child.GetUID()] = m
+					s.FS.Meta[child.GetUID()] = m
 					currNode = child
 					break
 				}
@@ -123,11 +123,11 @@ func (s *Scheduler) chTime(cwd *FalseCrypt.VFile, cpath []string) {
 		}
 	}
 
-	if cwd != &s.fs.Root {
+	if cwd != &s.FS.Root {
 		cwdUID := cwd.GetUID()
-		if m, ok := s.fs.Meta[cwdUID]; ok {
+		if m, ok := s.FS.Meta[cwdUID]; ok {
 			m.EdTime = now
-			s.fs.Meta[cwdUID] = m
+			s.FS.Meta[cwdUID] = m
 		}
 	}
 }
@@ -155,7 +155,7 @@ func (s *Scheduler) imAssist(localPath string, parent *FalseCrypt.VFile) error {
 		child.SetFlag(FalseCrypt.FLAG_DIR, true)
 
 		s.lock.Lock()
-		s.fs.Meta[uid] = FalseCrypt.VMeta{
+		s.FS.Meta[uid] = FalseCrypt.VMeta{
 			Name:   filepath.Base(localPath),
 			EdTime: uint64(time.Now().Unix()),
 		}
@@ -194,7 +194,7 @@ func (s *Scheduler) imAssist(localPath string, parent *FalseCrypt.VFile) error {
 		meta.EncSize = 0
 
 		s.lock.Lock()
-		s.fs.Meta[uid] = meta
+		s.FS.Meta[uid] = meta
 		parent.Children = append(parent.Children, child)
 		s.lock.Unlock()
 		return nil
@@ -272,7 +272,7 @@ func (s *Scheduler) imAssist(localPath string, parent *FalseCrypt.VFile) error {
 			return err
 		}
 
-		cid := s.fs.Account.GetCID(uid, uint32(chunkIdx))
+		cid := s.FS.Account.GetCID(uid, uint32(chunkIdx))
 		if err := s.Vio.WriteChunk(cid, chunkData); err != nil {
 			return err
 		}
@@ -283,7 +283,7 @@ func (s *Scheduler) imAssist(localPath string, parent *FalseCrypt.VFile) error {
 
 	// bind child node
 	s.lock.Lock()
-	s.fs.Meta[uid] = meta
+	s.FS.Meta[uid] = meta
 	parent.Children = append(parent.Children, child)
 	s.lock.Unlock()
 	return nil
@@ -294,7 +294,7 @@ func (s *Scheduler) exAssist(node *FalseCrypt.VFile, localDstDir string) error {
 	// get metadata
 	s.lock.RLock()
 	uid := node.GetUID()
-	meta, ok := s.fs.Meta[uid]
+	meta, ok := s.FS.Meta[uid]
 	s.lock.RUnlock()
 	if !ok {
 		return fmt.Errorf("metadata not found for UID %d", uid)
@@ -354,7 +354,7 @@ func (s *Scheduler) exAssist(node *FalseCrypt.VFile, localDstDir string) error {
 	finalEncSize := int64(meta.EncSize)
 	s.Log.SetPercent(0)
 	for remainingEnc > 0 {
-		cid := s.fs.Account.GetCID(uid, uint32(chunkIdx))
+		cid := s.FS.Account.GetCID(uid, uint32(chunkIdx))
 		chunkData, err := s.Vio.ReadChunk(cid)
 		if err != nil {
 			return err
@@ -417,7 +417,7 @@ func (s *Scheduler) catAssist(sel string) []byte {
 
 	for i := range cwd.Children {
 		child := &cwd.Children[i]
-		if m, ok := s.fs.Meta[child.GetUID()]; ok && m.Name == sel {
+		if m, ok := s.FS.Meta[child.GetUID()]; ok && m.Name == sel {
 			if !child.GetFlag(FalseCrypt.FLAG_DIR) {
 				uid = child.GetUID()
 				meta = m
@@ -446,7 +446,7 @@ func (s *Scheduler) catAssist(sel string) []byte {
 	s.Log.SetPercent(0)
 
 	// read single chunk
-	cid := s.fs.Account.GetCID(uid, 0)
+	cid := s.FS.Account.GetCID(uid, 0)
 	chunkData, err := s.Vio.ReadChunk(cid)
 	if err != nil {
 		s.Log.AddLog("cat", fmt.Sprintf("read chunk error: %v", err))
@@ -491,12 +491,12 @@ func (s *Scheduler) catAssist(sel string) []byte {
 func (s *Scheduler) Init(fs *FalseCrypt.PEVFS, vio FalseCrypt.VirtualIO, msg string, salt []byte, hkey []byte) {
 	// initialize fields
 	s.IsUpdated = false
-	s.fs = fs
+	s.FS = fs
 	s.Vio = vio
 	s.Log = new(Logger)
-	s.Cwd = &s.fs.Root
-	s.CwdPath = []string{s.fs.Meta[s.fs.Root.GetUID()].Name}
-	s.IsReadonly = s.fs.Account.UserName != "root"
+	s.Cwd = &s.FS.Root
+	s.CwdPath = []string{s.FS.Meta[s.FS.Root.GetUID()].Name}
+	s.IsReadonly = s.FS.Account.UserName != "root"
 	s.IsWorking.Store(false)
 	s.Msg = msg
 	s.Salt = salt
@@ -523,8 +523,8 @@ func (s *Scheduler) Cd(path string, isSub bool) {
 		nodeStack = append(nodeStack, s.Cwd)
 		pathStack = append(pathStack, s.CwdPath...)
 	} else {
-		nodeStack = append(nodeStack, &s.fs.Root)
-		pathStack = append(pathStack, s.fs.Meta[s.fs.Root.GetUID()].Name)
+		nodeStack = append(nodeStack, &s.FS.Root)
+		pathStack = append(pathStack, s.FS.Meta[s.FS.Root.GetUID()].Name)
 	}
 
 	// match by name
@@ -540,7 +540,7 @@ func (s *Scheduler) Cd(path string, isSub bool) {
 		for i := range currNode.Children {
 			child := &currNode.Children[i]
 			if child.GetFlag(FalseCrypt.FLAG_DIR) {
-				if meta, ok := s.fs.Meta[child.GetUID()]; ok && meta.Name == part {
+				if meta, ok := s.FS.Meta[child.GetUID()]; ok && meta.Name == part {
 					nodeStack = append(nodeStack, child)
 					pathStack = append(pathStack, part)
 					found = true
@@ -572,7 +572,7 @@ func (s *Scheduler) Ls() ([]string, []uint64, []uint64, []uint8, [][]bool) {
 	// get data of children
 	for i := range s.Cwd.Children {
 		child := &s.Cwd.Children[i]
-		meta, ok := s.fs.Meta[child.GetUID()]
+		meta, ok := s.FS.Meta[child.GetUID()]
 		if !ok {
 			continue
 		}
@@ -642,7 +642,7 @@ func (s *Scheduler) LsDbg(subnm string) (uint64, []byte, uint64, uint64, int, in
 		found := false
 		for i := range s.Cwd.Children {
 			child := &s.Cwd.Children[i]
-			if m, ok := s.fs.Meta[child.GetUID()]; ok && m.Name == subnm {
+			if m, ok := s.FS.Meta[child.GetUID()]; ok && m.Name == subnm {
 				target = child
 				found = true
 				break
@@ -663,7 +663,7 @@ func (s *Scheduler) LsDbg(subnm string) (uint64, []byte, uint64, uint64, int, in
 			dirnum++
 		} else {
 			filenum++
-			if meta, ok := s.fs.Meta[node.GetUID()]; ok {
+			if meta, ok := s.FS.Meta[node.GetUID()]; ok {
 				totalSize += meta.Size
 				totalEsize += meta.EncSize
 			}
@@ -674,7 +674,7 @@ func (s *Scheduler) LsDbg(subnm string) (uint64, []byte, uint64, uint64, int, in
 				walk(child)
 			} else {
 				filenum++
-				if meta, ok := s.fs.Meta[child.GetUID()]; ok {
+				if meta, ok := s.FS.Meta[child.GetUID()]; ok {
 					totalSize += meta.Size
 					totalEsize += meta.EncSize
 				}
@@ -685,7 +685,7 @@ func (s *Scheduler) LsDbg(subnm string) (uint64, []byte, uint64, uint64, int, in
 	// return result
 	walk(target)
 	uid := target.GetUID()
-	meta := s.fs.Meta[uid]
+	meta := s.FS.Meta[uid]
 	key, _ := s.Mask.XOR(meta.Key[0:FC_KEYSIZE])
 	return uid, key, totalSize, totalEsize, filenum, dirnum
 }
@@ -710,7 +710,7 @@ func (s *Scheduler) Search(pattern string, userA bool, userB bool, minsl uint8) 
 	walk = func(node *FalseCrypt.VFile, currentPath string) {
 		for i := range node.Children {
 			child := &node.Children[i]
-			meta, ok := s.fs.Meta[child.GetUID()]
+			meta, ok := s.FS.Meta[child.GetUID()]
 			if !ok {
 				continue
 			}
@@ -787,7 +787,7 @@ func (s *Scheduler) Export(sels []string, dst string) {
 		}
 		for i := range cwd.Children {
 			child := &cwd.Children[i]
-			if meta, ok := s.fs.Meta[child.GetUID()]; ok && meta.Name == sel {
+			if meta, ok := s.FS.Meta[child.GetUID()]; ok && meta.Name == sel {
 				targets = append(targets, *child)
 				break
 			}
@@ -802,7 +802,7 @@ func (s *Scheduler) Export(sels []string, dst string) {
 	}
 	for _, target := range targets {
 		if err := s.exAssist(&target, dst); err != nil {
-			s.Log.AddLog("export", fmt.Sprintf("error %v with %s", err, s.fs.Meta[target.GetUID()].Name))
+			s.Log.AddLog("export", fmt.Sprintf("error %v with %s", err, s.FS.Meta[target.GetUID()].Name))
 			return
 		}
 	}
@@ -845,7 +845,7 @@ func (s *Scheduler) Rm(sels []string) {
 	var collect func(node *FalseCrypt.VFile)
 	collect = func(node *FalseCrypt.VFile) {
 		uid := node.GetUID()
-		if meta, ok := s.fs.Meta[uid]; ok {
+		if meta, ok := s.FS.Meta[uid]; ok {
 			delUIDs = append(delUIDs, uid)
 			delNames = append(delNames, meta.Name)
 			delEncSizes = append(delEncSizes, meta.EncSize)
@@ -862,7 +862,7 @@ func (s *Scheduler) Rm(sels []string) {
 	foundAny := false
 	for i := range s.Cwd.Children {
 		child := &s.Cwd.Children[i]
-		if meta, ok := s.fs.Meta[child.GetUID()]; ok && targetSet[meta.Name] {
+		if meta, ok := s.FS.Meta[child.GetUID()]; ok && targetSet[meta.Name] {
 			foundAny = true
 			collect(child)
 		} else {
@@ -878,7 +878,7 @@ func (s *Scheduler) Rm(sels []string) {
 	// delete nodes and metas
 	s.Cwd.Children = newChildren
 	for _, uid := range delUIDs {
-		delete(s.fs.Meta, uid)
+		delete(s.FS.Meta, uid)
 	}
 	s.IsUpdated = true
 	s.chTime(s.Cwd, s.CwdPath)
@@ -896,7 +896,7 @@ func (s *Scheduler) Rm(sels []string) {
 
 		for remainingEnc > 0 {
 			currentChunkSize := min(remainingEnc, CHUNKSIZE)
-			cid := s.fs.Account.GetCID(delUIDs[i], uint32(chunkIdx))
+			cid := s.FS.Account.GetCID(delUIDs[i], uint32(chunkIdx))
 			if err := s.Vio.DelChunk(cid); err != nil {
 				s.Log.AddLog("rm", fmt.Sprintf("delete chunk error for %s (chunk %d): %v", delNames[i], chunkIdx, err))
 			}
@@ -916,8 +916,8 @@ func (s *Scheduler) Mv(src string, sels []string) {
 	defer s.lock.Unlock()
 
 	// find src dir
-	srcParts := []string{s.fs.Meta[s.fs.Root.GetUID()].Name}
-	srcNode := &s.fs.Root
+	srcParts := []string{s.FS.Meta[s.FS.Root.GetUID()].Name}
+	srcNode := &s.FS.Root
 	parts := strings.Split(src, "/")
 	for _, part := range parts {
 		if part == "" {
@@ -927,7 +927,7 @@ func (s *Scheduler) Mv(src string, sels []string) {
 		for i := range srcNode.Children {
 			child := &srcNode.Children[i]
 			if child.GetFlag(FalseCrypt.FLAG_DIR) {
-				if meta, ok := s.fs.Meta[child.GetUID()]; ok && meta.Name == part {
+				if meta, ok := s.FS.Meta[child.GetUID()]; ok && meta.Name == part {
 					srcNode = child
 					srcParts = append(srcParts, part)
 					found = true
@@ -959,7 +959,7 @@ func (s *Scheduler) Mv(src string, sels []string) {
 		idx := -1
 		for i := range srcNode.Children {
 			child := &srcNode.Children[i]
-			if meta, ok := s.fs.Meta[child.GetUID()]; ok && meta.Name == sel {
+			if meta, ok := s.FS.Meta[child.GetUID()]; ok && meta.Name == sel {
 				idx = i
 				break
 			}
@@ -992,7 +992,7 @@ func (s *Scheduler) Mv(src string, sels []string) {
 		// check name duplication
 		duplicate := false
 		for i := range s.Cwd.Children {
-			if m, ok := s.fs.Meta[s.Cwd.Children[i].GetUID()]; ok && m.Name == sel {
+			if m, ok := s.FS.Meta[s.Cwd.Children[i].GetUID()]; ok && m.Name == sel {
 				duplicate = true
 				break
 			}
@@ -1028,7 +1028,7 @@ func (s *Scheduler) Rename(sel string, nm string) {
 	s.lock.Lock()
 	defer s.lock.Unlock()
 	for i := range s.Cwd.Children {
-		if m, ok := s.fs.Meta[s.Cwd.Children[i].GetUID()]; ok && m.Name == nm {
+		if m, ok := s.FS.Meta[s.Cwd.Children[i].GetUID()]; ok && m.Name == nm {
 			s.Log.AddLog("rename", "duplicate name: "+nm)
 			return
 		}
@@ -1038,11 +1038,11 @@ func (s *Scheduler) Rename(sel string, nm string) {
 	found := false
 	for i := range s.Cwd.Children {
 		child := &s.Cwd.Children[i]
-		if m, ok := s.fs.Meta[child.GetUID()]; ok && m.Name == sel {
+		if m, ok := s.FS.Meta[child.GetUID()]; ok && m.Name == sel {
 			uid := child.GetUID()
-			meta := s.fs.Meta[uid]
+			meta := s.FS.Meta[uid]
 			meta.Name = nm
-			s.fs.Meta[uid] = meta
+			s.FS.Meta[uid] = meta
 			found = true
 			break
 		}
@@ -1084,7 +1084,7 @@ func (s *Scheduler) Chmod(sel string, userA bool, userB bool, seclvl uint8, recu
 	found := false
 	for i := range s.Cwd.Children {
 		child := &s.Cwd.Children[i]
-		if m, ok := s.fs.Meta[child.GetUID()]; ok && m.Name == sel {
+		if m, ok := s.FS.Meta[child.GetUID()]; ok && m.Name == sel {
 			changeMode(child)
 			found = true
 			break
@@ -1113,7 +1113,7 @@ func (s *Scheduler) Mkdir(nm string) {
 	s.lock.Lock()
 	defer s.lock.Unlock()
 	for i := range s.Cwd.Children {
-		if m, ok := s.fs.Meta[s.Cwd.Children[i].GetUID()]; ok && m.Name == nm {
+		if m, ok := s.FS.Meta[s.Cwd.Children[i].GetUID()]; ok && m.Name == nm {
 			s.Log.AddLog("mkdir", "duplicate name: "+nm)
 			return
 		}
@@ -1129,7 +1129,7 @@ func (s *Scheduler) Mkdir(nm string) {
 	child.SetUID(uid)
 	child.SetSL(FalseCrypt.SL_CONTROLLED)
 	child.SetFlag(FalseCrypt.FLAG_DIR, true)
-	s.fs.Meta[uid] = FalseCrypt.VMeta{
+	s.FS.Meta[uid] = FalseCrypt.VMeta{
 		Name:   nm,
 		EdTime: uint64(time.Now().Unix()),
 	}
@@ -1150,8 +1150,8 @@ func (s *Scheduler) Chflag(userA string, userB string) {
 	}
 	s.lock.Lock()
 	defer s.lock.Unlock()
-	s.fs.Account.UserBitA = userA
-	s.fs.Account.UserBitB = userB
+	s.FS.Account.UserBitA = userA
+	s.FS.Account.UserBitB = userB
 	s.IsUpdated = true
 	s.Log.AddLog("chflag", "user flag updated")
 }
@@ -1177,7 +1177,7 @@ func (s *Scheduler) Commit() {
 
 	// pack PEVFS
 	buf := new(bytes.Buffer)
-	err = s.fs.Pack(hkey, s.Salt, s.Msg, buf)
+	err = s.FS.Pack(hkey, s.Salt, s.Msg, buf)
 	s.lock.Unlock()
 	if err != nil {
 		s.Log.AddLog("commit", fmt.Sprintf("pack error: %v", err))
@@ -1185,7 +1185,7 @@ func (s *Scheduler) Commit() {
 	}
 
 	// push account file
-	if err := s.Vio.SetAccount(s.fs.Account.UserName, bytes.NewReader(buf.Bytes()), int64(buf.Len())); err != nil {
+	if err := s.Vio.SetAccount(s.FS.Account.UserName, bytes.NewReader(buf.Bytes()), int64(buf.Len())); err != nil {
 		s.Log.AddLog("commit", fmt.Sprintf("storage save error: %v", err))
 		return
 	}
@@ -1220,7 +1220,7 @@ func (s *Scheduler) Passwd(msg string, pw []byte, kf []byte, newWrkey []byte) {
 	// update write auth key if provided
 	s.lock.Lock()
 	if len(newWrkey) > 0 {
-		s.fs.Account.WriteAuth = newWrkey
+		s.FS.Account.WriteAuth = newWrkey
 		s.Vio, err = Config.GetIO(newWrkey)
 		if err != nil {
 			s.Log.AddLog("passwd", fmt.Sprintf("IO init error: %v", err))
@@ -1232,7 +1232,7 @@ func (s *Scheduler) Passwd(msg string, pw []byte, kf []byte, newWrkey []byte) {
 	// make buffer, pack
 	s.lock.Lock()
 	buf := new(bytes.Buffer)
-	err = s.fs.Pack(hkey, salt, msg, buf)
+	err = s.FS.Pack(hkey, salt, msg, buf)
 	s.lock.Unlock()
 	if err != nil {
 		s.Log.AddLog("passwd", fmt.Sprintf("pack error: %v", err))
@@ -1241,7 +1241,7 @@ func (s *Scheduler) Passwd(msg string, pw []byte, kf []byte, newWrkey []byte) {
 
 	// push account file
 	if s.IsReadonly {
-		filename := hex.EncodeToString([]byte(s.fs.Account.UserName)) + ".webp"
+		filename := hex.EncodeToString([]byte(s.FS.Account.UserName)) + ".webp"
 		err = os.WriteFile(filename, buf.Bytes(), 0644)
 		if err != nil {
 			s.Log.AddLog("passwd", fmt.Sprintf("local write error: %v", err))
@@ -1249,7 +1249,7 @@ func (s *Scheduler) Passwd(msg string, pw []byte, kf []byte, newWrkey []byte) {
 		}
 		s.Log.AddLog("passwd", "accfile saved as: "+filename)
 	} else {
-		err = s.Vio.SetAccount(s.fs.Account.UserName, bytes.NewReader(buf.Bytes()), int64(buf.Len()))
+		err = s.Vio.SetAccount(s.FS.Account.UserName, bytes.NewReader(buf.Bytes()), int64(buf.Len()))
 		if err != nil {
 			s.Log.AddLog("passwd", fmt.Sprintf("storage save error: %v", err))
 			return
@@ -1271,7 +1271,7 @@ func (s *Scheduler) Passwd(msg string, pw []byte, kf []byte, newWrkey []byte) {
 func (s *Scheduler) Share(username string, seclvl uint8, msg string, pw []byte, kf []byte) {
 	s.IsWorking.Store(true)
 	defer s.finish("share")
-	if username == "" || username == "root" || username == s.fs.Account.UserName {
+	if username == "" || username == "root" || username == s.FS.Account.UserName {
 		s.Log.AddLog("share", "invalid username: "+username)
 		return
 	}
@@ -1288,17 +1288,17 @@ func (s *Scheduler) Share(username string, seclvl uint8, msg string, pw []byte, 
 	// make new PEVFS
 	s.lock.Lock()
 	vu := FalseCrypt.VUser{
-		StorageName: s.fs.Account.StorageName,
+		StorageName: s.FS.Account.StorageName,
 		UserName:    username,
 		SecureLevel: seclvl,
-		UserBitA:    s.fs.Account.UserBitA,
-		UserBitB:    s.fs.Account.UserBitB,
-		CIDpad:      slices.Clone(s.fs.Account.CIDpad),
-		CIDkey:      slices.Clone(s.fs.Account.CIDkey),
+		UserBitA:    s.FS.Account.UserBitA,
+		UserBitB:    s.FS.Account.UserBitB,
+		CIDpad:      slices.Clone(s.FS.Account.CIDpad),
+		CIDkey:      slices.Clone(s.FS.Account.CIDkey),
 		WriteAuth:   nil, // no write auth
 	}
 	newPevfs := new(FalseCrypt.PEVFS)
-	newPevfs.Init(vu, *s.Cwd, s.fs.Meta, seclvl, FC_KEYSIZE)
+	newPevfs.Init(vu, *s.Cwd, s.FS.Meta, seclvl, FC_KEYSIZE)
 
 	// pack PEVFS
 	buf := new(bytes.Buffer)
@@ -1353,7 +1353,7 @@ func (s *Scheduler) Sync() {
 	s.lock.RLock()
 	var uids []uint64
 	var encSizes []uint64
-	for uid, meta := range s.fs.Meta {
+	for uid, meta := range s.FS.Meta {
 		if meta.EncSize > 0 {
 			uids = append(uids, uid)
 			encSizes = append(encSizes, meta.EncSize)
@@ -1385,7 +1385,7 @@ func (s *Scheduler) Sync() {
 	for i, uid := range uids {
 		count := fileChunkCounts[i]
 		for chunkIdx := 0; chunkIdx < count; chunkIdx++ {
-			cid := s.fs.Account.GetCID(uid, uint32(chunkIdx))
+			cid := s.FS.Account.GetCID(uid, uint32(chunkIdx))
 			if !bfRemote.Test(cid) {
 				s.Log.AddLog("sync", fmt.Sprintf("chunk %d.%d is missing from remote storage (CID %x)", uid, chunkIdx, cid))
 				missingChunks++

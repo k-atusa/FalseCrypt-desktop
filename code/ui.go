@@ -627,10 +627,10 @@ func (v *ViewerPage) gridCard(idx int) fyne.CanvasObject {
 	// user bits
 	var tags []string
 	if userA {
-		tags = append(tags, v.Sched.fs.Account.UserBitA)
+		tags = append(tags, v.Sched.FS.Account.UserBitA)
 	}
 	if userB {
-		tags = append(tags, v.Sched.fs.Account.UserBitB)
+		tags = append(tags, v.Sched.FS.Account.UserBitB)
 	}
 	tagStr := strings.Join(tags, " ")
 	tagText := canvas.NewText(tagStr, color.NRGBA{R: 140, G: 220, B: 140, A: 255}) // green
@@ -688,7 +688,7 @@ func (v *ViewerPage) statusBar() fyne.CanvasObject {
 		widget.NewButton("Account", func() { v.showTab("account") }),
 	)
 	box0b := container.NewHBox(
-		widget.NewLabel(fmt.Sprintf("%s@%s | %s", v.Sched.fs.Account.UserName, v.Sched.fs.Account.StorageName, slName(v.Sched.fs.SecureLvl, true))),
+		widget.NewLabel(fmt.Sprintf("%s@%s | %s", v.Sched.FS.Account.UserName, v.Sched.FS.Account.StorageName, slName(v.Sched.FS.Account.SecureLevel, true))),
 		v.timerLabel, btn0,
 	)
 	return container.NewBorder(nil, nil, box0a, box0b, layout.NewSpacer())
@@ -761,8 +761,8 @@ func (v *ViewerPage) schDialog() {
 	// part0: condition set
 	ent0 := widget.NewEntry()
 	ent0.SetPlaceHolder("Regex Pattern")
-	chk0a := widget.NewCheck("User A", nil)
-	chk0b := widget.NewCheck("User B", nil)
+	chk0a := widget.NewCheck(v.Sched.FS.Account.UserBitA, nil)
+	chk0b := widget.NewCheck(v.Sched.FS.Account.UserBitB, nil)
 	sel0 := widget.NewSelect([]string{"CONTROLLED", "CONFIDENTIAL", "SECRET", "TOP SECRET"}, nil)
 	sel0.SetSelected("CONTROLLED")
 
@@ -908,11 +908,11 @@ func (v *ViewerPage) accTab() fyne.CanvasObject {
 
 	// part3: user flag change
 	ent3a := widget.NewEntry()
-	ent3a.SetText(v.Sched.fs.Account.UserBitA)
+	ent3a.SetText(v.Sched.FS.Account.UserBitA)
 	ent3a.SetPlaceHolder("User Flag A")
 
 	ent3b := widget.NewEntry()
-	ent3b.SetText(v.Sched.fs.Account.UserBitB)
+	ent3b.SetText(v.Sched.FS.Account.UserBitB)
 	ent3b.SetPlaceHolder("User Flag B")
 
 	btn3 := widget.NewButton("Change Flags", func() {
@@ -968,8 +968,8 @@ func (v *ViewerPage) back() {
 func (v *ViewerPage) root() {
 	s := v.Sched
 	s.lock.Lock()
-	s.Cwd = &s.fs.Root
-	s.CwdPath = []string{s.fs.Meta[s.fs.Root.GetUID()].Name}
+	s.Cwd = &s.FS.Root
+	s.CwdPath = []string{s.FS.Meta[s.FS.Root.GetUID()].Name}
 	s.lock.Unlock()
 	v.refresh()
 }
@@ -1138,9 +1138,9 @@ func (v *ViewerPage) chmod() {
 	currSl := v.SecLvls[idx]
 
 	// part2: form components
-	chk0 := widget.NewCheck("UserA", nil)
+	chk0 := widget.NewCheck(v.Sched.FS.Account.UserBitA, nil)
 	chk0.SetChecked(currUserA)
-	chk1 := widget.NewCheck("UserB", nil)
+	chk1 := widget.NewCheck(v.Sched.FS.Account.UserBitB, nil)
 	chk1.SetChecked(currUserB)
 	chk2 := widget.NewCheck("Recursive", nil)
 	sel0 := widget.NewSelect([]string{"TOP SECRET", "SECRET", "CONFIDENTIAL", "CONTROLLED"}, nil)
@@ -1148,8 +1148,8 @@ func (v *ViewerPage) chmod() {
 
 	// part3: show form
 	items := []*widget.FormItem{
-		widget.NewFormItem("UserA", chk0),
-		widget.NewFormItem("UserB", chk1),
+		widget.NewFormItem("Flag A", chk0),
+		widget.NewFormItem("Flag B", chk1),
 		widget.NewFormItem("Security Level", sel0),
 		widget.NewFormItem("Recursive", chk2),
 	}
