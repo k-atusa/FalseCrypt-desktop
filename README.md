@@ -1,4 +1,4 @@
-# FalseCrypt-desktop v1.0.0
+# FalseCrypt-desktop v1.0.1
 
 project USAG: FalseCrypt desktop version
 

@@ -17,7 +17,7 @@ import (
 )
 
 // ===== global variables =====
-const FC_VERSION string = "2026 @k-atusa [USAG] FalseCrypt v1.0.0"
+const FC_VERSION string = "2026 @k-atusa [USAG] FalseCrypt v1.0.1"
 const FC_KEYSIZE uint8 = 32
 const CHUNKSIZE int64 = 64 * 1048576
 const LIMIT_IMAGE int64 = 16 * 1048576
