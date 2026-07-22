@@ -56,6 +56,49 @@ func slName(sl uint8, isLong bool) string {
 	return nm[sl]
 }
 
+func wrapName(name string, maxWidth int) string {
+	const maxLines = 3
+	var lines []string
+	var cur []rune
+	var w int
+	runes := []rune(name)
+	overflow := false
+	for i := 0; i < len(runes); i++ {
+		r := runes[i]
+		var rw int
+		if r < 128 {
+			rw = 1
+		} else {
+			rw = 2
+		}
+		if w+rw > maxWidth && w > 0 {
+			lines = append(lines, string(cur))
+			if len(lines) >= maxLines {
+				overflow = true
+				break
+			}
+			cur = nil
+			w = 0
+		}
+		cur = append(cur, r)
+		w += rw
+	}
+	if !overflow && len(cur) > 0 {
+		lines = append(lines, string(cur))
+	}
+	// truncate last line if overflow
+	if overflow && len(lines) > 0 {
+		last := []rune(lines[len(lines)-1])
+		if len(last) > 2 {
+			last = last[:len(last)-2]
+		} else {
+			last = nil
+		}
+		lines[len(lines)-1] = string(last) + "..."
+	}
+	return strings.Join(lines, "\n")
+}
+
 func slColor(sl uint8) color.NRGBA {
 	switch sl {
 	case FalseCrypt.SL_TOPSECRET:
@@ -511,7 +554,7 @@ func (v *ViewerPage) viewTab() fyne.CanvasObject {
 	v.rebuild()
 	box0 := v.navBar()
 	box1 := container.NewVBox(container.NewHScroll(v.toolbarBox), widget.NewSeparator(), box0)
-	v.gridWrap = container.NewGridWrap(fyne.NewSize(210, 90))
+	v.gridWrap = container.NewGridWrap(fyne.NewSize(210, 110))
 	box2 := container.NewVScroll(v.gridWrap)
 	v.refresh()
 	return container.NewBorder(box1, nil, nil, nil, box2)
@@ -607,10 +650,17 @@ func (v *ViewerPage) gridCard(idx int) fyne.CanvasObject {
 	iconImg.FillMode = canvas.ImageFillContain
 	iconImg.SetMinSize(fyne.NewSize(48, 48))
 
-	// name
-	nameText := canvas.NewText(name, color.White)
-	nameText.TextStyle.Bold = true
-	nameText.TextSize = 13
+	// name (wrap at 18 display-width units: ASCII=1, others=2)
+	wrapped := wrapName(name, 18)
+	nameLines := strings.Split(wrapped, "\n")
+	var nameObjs []fyne.CanvasObject
+	for _, ln := range nameLines {
+		t := canvas.NewText(ln, color.NRGBA{R: 245, G: 245, B: 245, A: 255})
+		t.TextStyle.Bold = true
+		t.TextSize = 14
+		nameObjs = append(nameObjs, t)
+	}
+	nameBox := container.NewVBox(nameObjs...)
 
 	// size, time
 	sizeStr := formatSize(v.Sizes[idx])
@@ -656,7 +706,7 @@ func (v *ViewerPage) gridCard(idx int) fyne.CanvasObject {
 
 	// join to card
 	content := container.NewVBox(
-		container.NewHBox(iconImg, container.NewGridWrap(fyne.NewSize(200, 24), nameText)),
+		container.NewHBox(iconImg, nameBox),
 		container.NewHBox(slText, infoText),
 		tagText,
 	)
@@ -1050,7 +1100,7 @@ func (v *ViewerPage) rename() {
 	}
 	ent0 := widget.NewEntry()
 	ent0.SetText(sels[0])
-	items := []*widget.FormItem{widget.NewFormItem("New Name", ent0)}
+	items := []*widget.FormItem{widget.NewFormItem("Name", ent0)}
 	dialog.ShowForm("Rename", "Rename", "Cancel", items, func(ok bool) {
 		if ok && ent0.Text != "" {
 			v.Sched.Rename(sels[0], ent0.Text)
